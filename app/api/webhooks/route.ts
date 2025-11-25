@@ -7,6 +7,23 @@ import {
   deleteProductRecord,
   deletePriceRecord
 } from '@/utils/supabase/admin';
+import { createClient } from '@supabase/supabase-js';
+
+// FIX VERCEL BUILD : on évite l’initialisation de Supabase pendant le build
+let supabase: any = null;
+if (
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+) {
+  supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  );
+} else {
+  console.warn(
+    'Supabase env vars missing – webhook will skip Supabase calls during build'
+  );
+}
 
 const relevantEvents = new Set([
   'product.created',
@@ -25,16 +42,23 @@ export async function POST(req: Request) {
   const body = await req.text();
   const sig = req.headers.get('stripe-signature') as string;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
   let event: Stripe.Event;
 
   try {
-    if (!sig || !webhookSecret)
+    if (!sig || !webhookSecret) {
       return new Response('Webhook secret not found.', { status: 400 });
+    }
     event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
-    console.log(`🔔  Webhook received: ${event.type}`);
+    console.log(`Webhook received: ${event.type}`);
   } catch (err: any) {
-    console.log(`❌ Error message: ${err.message}`);
+    console.log(`Webhook Error: ${err.message}`);
     return new Response(`Webhook Error: ${err.message}`, { status: 400 });
+  }
+
+  // Si on n’a pas Supabase (cas du build Vercel), on accepte le webhook quand même
+  if (!supabase && process.env.VERCEL) {
+    return new Response(JSON.stringify({ received: true }));
   }
 
   if (relevantEvents.has(event.type)) {
@@ -80,17 +104,9 @@ export async function POST(req: Request) {
       }
     } catch (error) {
       console.log(error);
-      return new Response(
-        'Webhook handler failed. View your Next.js function logs.',
-        {
-          status: 400
-        }
-      );
+      return new Response('Webhook handler failed.', { status: 400 });
     }
-  } else {
-    return new Response(`Unsupported event type: ${event.type}`, {
-      status: 400
-    });
   }
+
   return new Response(JSON.stringify({ received: true }));
 }
